@@ -1,3 +1,6 @@
+// License: Apache 2.0 OR MIT, at your option
+// Based on code from https://github.com/dcrewi/rust-mersenne-twister
+
 // Input to the shader. The length of the array is determined by what buffer is bound.
 //
 // Out of bounds accesses 
@@ -19,14 +22,18 @@ struct Mersenne {
 }
 
 fn init() -> Mersenne {
-	return Mersenne(0, array<u32, N>());
+	var mt = Mersenne(0, array<u32, N>());
+	for (var i: u32 = 0; i < N; i++) {
+		mt.state[i] = 0;
+	}
+	return mt;
 }
 
 fn reseed(mt: ptr<function, Mersenne>, seed: u32) {
 	(*mt).idx = N;
 	(*mt).state[0] = seed;
 	for (var i: u32 = 1; i < N; i++) {
-		(*mt).state[i] = 1812433253 * ((*mt).state[i - 1] * ((*mt).state[i - 1] >> 30)) + i;
+		(*mt).state[i] = 1812433253 * ((*mt).state[i - 1] ^ ((*mt).state[i - 1] >> 30)) + i;
 	}
 }
 
@@ -77,12 +84,10 @@ fn mersenne(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Do the multiply by two and write to the output.
+    // Compute the first value and write to the output.
     var mt = init();
     let seed = input[global_id.x];
     reseed(&mt, seed);
     let result = next(&mt);
     output[global_id.x] = result;
-    output[global_id.x] = mt.state[0];
-    //output[global_id.x] = result;
 }

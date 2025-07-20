@@ -79,7 +79,7 @@ fn main() {
     //
     // `include_wgsl` is a macro provided by wgpu like `include_str` which constructs a ShaderModuleDescriptor.
     // If you want to load shaders differently, you can construct the ShaderModuleDescriptor manually.
-    let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+    let module = device.create_shader_module(wgpu::include_wgsl!("mt19937.wgsl"));
 
     // Create a buffer with the data we want to process on the GPU.
     //
