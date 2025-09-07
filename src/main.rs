@@ -29,10 +29,10 @@ fn normalize_arguments(arguments: &mut Vec<u32>) {
 
     len = arguments.len();
     if len % 4 == 2 {
-        arguments[len - 2] = arguments[len - 2] * 2;
-        arguments[len - 1] = arguments[len - 1] * 2 + 1;
+        arguments[len - 2] = arguments[len - 2];
+        arguments[len - 1] = arguments[len - 1];
         arguments.push(0);
-        arguments.push(4294967295);
+        arguments.push(0x7fffffff);
     }
 }
 
@@ -48,6 +48,8 @@ fn lint_arguments(arguments: &Vec<u32>) -> bool {
                     || range_min > range_max
                     || match_max < range_min
                     || match_min > range_max
+                    || range_max > 0x7fffffff
+                    || match_max > 0x7fffffff
                 {
                     return false;
                 }
@@ -128,7 +130,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
     });
 
     // Now we create a buffer to store the output data.
-    let max_results = 10;
+    let max_results = 1_000_000;
     let output_buffer_size = max_results * std::mem::size_of::<u32>() as u64;
     let output_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -285,7 +287,14 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
     // here the length is 2
     // and the actual data is [8, 6]
     let subslice_start = 1;
-    let subslice_end = 1 + result[0] as usize;
+    let mut subslice_end = 1 + result[0] as usize;
+    if subslice_end > result.len() {
+        eprintln!(
+            "WARNING: there were many more results than the GPU could transfer to the CPU,\n\
+             please use another tool for now, like https://www.openwall.com/php_mt_seed/"
+        );
+        subslice_end = result.len()
+    }
     let useful_results = &result[subslice_start..subslice_end];
 
     return Vec::from(useful_results);
@@ -319,19 +328,41 @@ fn test_find_seed_0() {
     let mut arguments = vec![1178568022];
     let expected_seed = 0;
     normalize_arguments(&mut arguments);
-    let step = 0;
+    let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
     assert_eq!(&result, &[expected_seed]);
 }
 
 #[test]
-fn test_find_seed_with_multiple_outputs() {
+fn test_find_seed_0_short_range() {
+    let mut arguments = vec![9170, 9170, 1000, 10000];
+    let expected_seed = 0;
+    normalize_arguments(&mut arguments);
+    let step = expected_seed % 256;
+    let result = find_mersenne_seed(&arguments, step);
+    assert!(
+        result.contains(&expected_seed),
+        "expected that the results contain the seed {expected_seed} : {result:?}"
+    );
+}
+
+#[test]
+fn test_lint_too_big_range() {
     let arguments = vec![
         1395647406, 1395647406, 0, 4294967295, 3472777710, 3472777710, 0, 4294967295, 4039049869,
         4039049869, 0, 4294967295,
     ];
+    assert_eq!(false, lint_arguments(&arguments));
+}
+
+#[test]
+fn test_find_seed_with_multiple_outputs_default_range() {
+    let arguments = vec![
+        697823703, 697823703, 0, 0x7fffffff, 1736388855, 1736388855, 0, 0x7fffffff, 2019524934,
+        2019524934, 0, 0x7fffffff,
+    ];
     let expected_seed = 4242;
-    let step = 146;
+    let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
     assert_eq!(&result, &[expected_seed]);
 }
@@ -342,7 +373,7 @@ fn test_find_seed_with_multiple_outputs_shorter_ranges() {
         7505, 7505, 1000, 10000, 2986, 2986, 1000, 10000, 1457, 1457, 1000, 10000,
     ];
     let expected_seed = 424242;
-    let step = 50;
+    let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
     assert_eq!(&result, &[expected_seed]);
 }

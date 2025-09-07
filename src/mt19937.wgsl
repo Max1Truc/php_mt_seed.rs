@@ -103,7 +103,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let range_max = input[i + 3];
 
         let nextint = next(&mt);
-        let randint = nextint % (range_max - range_min) + range_min;
+        let randint = select(
+            nextint % (range_max - range_min + 1) + range_min,
+            nextint >> 1,
+            range_min == 0 && range_max == 0x7fffffff
+        );
+        
         if randint < match_min || randint > match_max {
             seed_is_valid = false;
             break;
