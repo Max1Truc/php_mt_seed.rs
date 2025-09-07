@@ -29,11 +29,7 @@ struct Mersenne {
 }
 
 fn init() -> Mersenne {
-    var mt = Mersenne(0, array<u32, N>());
-    for (var i: u32 = 0; i < N; i++) {
-        mt.state[i] = 0;
-    }
-    return mt;
+    return Mersenne(0, array<u32, N>());
 }
 
 fn reseed(mt: ptr<function, Mersenne>, seed: u32) {
