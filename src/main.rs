@@ -1,39 +1,67 @@
-/// To serve as an introduction to the wgpu api, we will implement a simple
-/// compute shader which takes a list of numbers on the CPU and doubles them on the GPU.
-///
-/// While this isn't a very practical example, you will see all the major components
-/// of using wgpu headlessly, including getting a device, running a shader, and transferring
-/// data between the CPU and GPU.
-///
-/// If you time the recording and execution of this example you will certainly see that
-/// running on the gpu is slower than doing the same calculation on the cpu. This is because
-/// floating point multiplication is a very simple operation so the transfer/submission overhead
-/// is quite a lot higher than the actual computation. This is normal and shows that the GPU
-/// needs a lot higher work/transfer ratio to come out ahead.
 use std::{num::NonZeroU64, str::FromStr};
 use wgpu::util::DeviceExt;
 
-fn main() {
-    // Parse all arguments as floats. We need to skip argument 0, which is the name of the program.
-    let arguments: Vec<u32> = std::env::args()
-        .skip(1)
+fn print_usage() {
+    println!(
+        "Usage: php_mt_seed.rs VALUE_OR_MATCH_MIN [MATCH_MAX [RANGE_MIN RANGE_MAX]] ...\n\n\
+         This tool is similar to openwall's php_mt_seed, though php_mt_seed.rs only supports PHP 7.1.0+\n\
+         Have a look at openwall's php_mt_seed documentation for more information on CLI arguments:\n\
+         - https://www.openwall.com/php_mt_seed/README\n\
+         - https://github.com/openwall/php_mt_seed"
+    );
+}
+
+fn get_arguments() -> Vec<u32> {
+    return std::env::args()
+        .skip(1) // skip the name of the program
         .map(|s| {
-            u32::from_str(&s).unwrap_or_else(|_| panic!("Cannot parse argument {s:?} as a float."))
+            u32::from_str(&s)
+                .unwrap_or_else(|_| panic!("Cannot parse argument {s:?} as an integer."))
         })
         .collect();
+}
 
-    if arguments.is_empty() {
-        println!("No arguments provided. Please provide a list of seeds to compute.");
-        return;
+fn normalize_arguments(arguments: &mut Vec<u32>) {
+    let mut len = arguments.len();
+    if len % 4 == 1 {
+        arguments.push(arguments[len - 1]);
     }
 
-    println!("Parsed {} arguments", arguments.len());
+    len = arguments.len();
+    if len % 4 == 2 {
+        arguments[len - 2] = arguments[len - 2] * 2;
+        arguments[len - 1] = arguments[len - 1] * 2 + 1;
+        arguments.push(0);
+        arguments.push(4294967295);
+    }
+}
 
-    // wgpu uses `log` for all of our logging, so we initialize a logger with the `env_logger` crate.
-    //
-    // To change the log level, set the `RUST_LOG` environment variable. See the `env_logger`
-    // documentation for more information.
-    env_logger::init();
+fn lint_arguments(arguments: &Vec<u32>) -> bool {
+    if arguments.is_empty() {
+        return false;
+    }
+
+    for chunk in arguments.chunks(4) {
+        match chunk {
+            &[match_min, match_max, range_min, range_max] => {
+                if match_min > match_max
+                    || range_min > range_max
+                    || match_max < range_min
+                    || match_min > range_max
+                {
+                    return false;
+                }
+            }
+            _ => return false, // if the normalized argument number isn't a multiple of 4
+        }
+    }
+
+    return true;
+}
+
+/// uses the GPU to find the seed given the `arguments` in openwall's php_mt_rand format, and `step` which is between 0 and 256
+fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
+    assert!(step < 256);
 
     // We first initialize an wgpu `Instance`, which contains any "global" state wgpu needs.
     //
@@ -50,7 +78,9 @@ fn main() {
             .expect("Failed to create adapter");
 
     // Print out some basic information about the adapter.
-    println!("Running on Adapter: {:#?}", adapter.get_info());
+    if step == 0 {
+        println!("Running on Adapter: {:#?}", adapter.get_info());
+    }
 
     // Check to see if the adapter supports compute shaders. While WebGPU guarantees support for
     // compute shaders, wgpu supports a wider range of devices through the use of "downlevel" devices.
@@ -81,6 +111,10 @@ fn main() {
     // If you want to load shaders differently, you can construct the ShaderModuleDescriptor manually.
     let module = device.create_shader_module(wgpu::include_wgsl!("mt19937.wgsl"));
 
+    let mut input_data = Vec::new();
+    input_data.push(step);
+    input_data.extend_from_slice(arguments);
+
     // Create a buffer with the data we want to process on the GPU.
     //
     // `create_buffer_init` is a utility provided by `wgpu::util::DeviceExt` which simplifies creating
@@ -89,14 +123,16 @@ fn main() {
     // We use the `bytemuck` crate to cast the slice of f32 to a &[u8] to be uploaded to the GPU.
     let input_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: bytemuck::cast_slice(&arguments),
+        contents: bytemuck::cast_slice(&input_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
     // Now we create a buffer to store the output data.
+    let max_results = 10;
+    let output_buffer_size = max_results * std::mem::size_of::<u32>() as u64;
     let output_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: input_data_buffer.size(),
+        size: output_buffer_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -106,7 +142,7 @@ fn main() {
     // and that usage can only be used with `COPY_DST`.
     let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: input_data_buffer.size(),
+        size: output_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -136,7 +172,7 @@ fn main() {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     // This is the size of a single element in the buffer.
-                    min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                    min_binding_size: Some(NonZeroU64::new(8).unwrap()),
                     has_dynamic_offset: false,
                 },
                 count: None,
@@ -176,7 +212,7 @@ fn main() {
         label: None,
         layout: Some(&pipeline_layout),
         module: &module,
-        entry_point: Some("mersenne"),
+        entry_point: Some("main"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     });
@@ -198,12 +234,7 @@ fn main() {
     compute_pass.set_bind_group(0, &bind_group, &[]);
 
     // Now we dispatch a series of workgroups. Each workgroup is a 3D grid of individual programs.
-    //
-    // We defined the workgroup size in the shader as 64x1x1. So in order to process all of our
-    // inputs, we ceiling divide the number of inputs by 64. If the user passes 32 inputs, we will
-    // dispatch 1 workgroups. If the user passes 65 inputs, we will dispatch 2 workgroups, etc.
-    let workgroup_count = arguments.len().div_ceil(64);
-    compute_pass.dispatch_workgroups(workgroup_count as u32, 1, 1);
+    compute_pass.dispatch_workgroups(65535, 1, 1);
 
     // Now we drop the compute pass, giving us access to the encoder again.
     drop(compute_pass);
@@ -248,6 +279,70 @@ fn main() {
     // Convert the data back to a slice of f32.
     let result: &[u32] = bytemuck::cast_slice(&data);
 
-    // Print out the result.
-    println!("Result: {result:?}");
+    // `result` is actually a length + the data + some trailing trash
+    // for example for 2 results we might have:
+    // [2, 8, 6, 4, 1, 0, 0, 0]
+    // here the length is 2
+    // and the actual data is [8, 6]
+    let subslice_start = 1;
+    let subslice_end = 1 + result[0] as usize;
+    let useful_results = &result[subslice_start..subslice_end];
+
+    return Vec::from(useful_results);
+}
+
+fn main() {
+    let mut arguments = get_arguments();
+    normalize_arguments(&mut arguments);
+    if !lint_arguments(&arguments) {
+        print_usage();
+        return;
+    }
+
+    // wgpu uses `log` for all of our logging, so we initialize a logger with the `env_logger` crate.
+    //
+    // To change the log level, set the `RUST_LOG` environment variable. See the `env_logger`
+    // documentation for more information.
+    env_logger::init();
+
+    for step in 0..256 {
+        println!("progress: {step} / 256");
+        let results = find_mersenne_seed(&arguments, step);
+        for seed in results {
+            println!("seed = {:#x} = {} (PHP 7.1.0+)", seed, seed);
+        }
+    }
+}
+
+#[test]
+fn test_find_seed_0() {
+    let mut arguments = vec![1178568022];
+    let expected_seed = 0;
+    normalize_arguments(&mut arguments);
+    let step = 0;
+    let result = find_mersenne_seed(&arguments, step);
+    assert_eq!(&result, &[expected_seed]);
+}
+
+#[test]
+fn test_find_seed_with_multiple_outputs() {
+    let arguments = vec![
+        1395647406, 1395647406, 0, 4294967295, 3472777710, 3472777710, 0, 4294967295, 4039049869,
+        4039049869, 0, 4294967295,
+    ];
+    let expected_seed = 4242;
+    let step = 146;
+    let result = find_mersenne_seed(&arguments, step);
+    assert_eq!(&result, &[expected_seed]);
+}
+
+#[test]
+fn test_find_seed_with_multiple_outputs_shorter_ranges() {
+    let arguments = vec![
+        7505, 7505, 1000, 10000, 2986, 2986, 1000, 10000, 1457, 1457, 1000, 10000,
+    ];
+    let expected_seed = 424242;
+    let step = 50;
+    let result = find_mersenne_seed(&arguments, step);
+    assert_eq!(&result, &[expected_seed]);
 }
