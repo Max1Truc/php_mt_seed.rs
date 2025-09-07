@@ -55,6 +55,7 @@ fn fill_next_state(mt: ptr<function, Mersenne>) {
         (*mt).state[i] = (*mt).state[i + M] ^ (x >> 1) ^ ((x & 1) * MATRIX_A);
     }
 
+    /*
     for (var i: u32 = N - M; i < N - 1; i++) {
         let x = ((*mt).state[i] & UPPER_MASK) | ((*mt).state[i + 1] & LOWER_MASK);
         (*mt).state[i] = (*mt).state[i + M - N] ^ (x >> 1) ^ ((x & 1) * MATRIX_A);
@@ -62,6 +63,7 @@ fn fill_next_state(mt: ptr<function, Mersenne>) {
 
     let x = ((*mt).state[N - 1] & UPPER_MASK) | ((*mt).state[0] & LOWER_MASK);
     (*mt).state[N - 1] = (*mt).state[M - 1] ^ (x >> 1) ^ ((x & 1) * MATRIX_A);
+    */
 
     (*mt).idx = 0;
 }
