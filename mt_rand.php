@@ -33,3 +33,8 @@ mt_srand(424242);
 echo mt_rand(1000, 10000) . "\n";
 echo mt_rand(1000, 10000) . "\n";
 echo mt_rand(1000, 10000) . "\n";
+
+echo "\n";
+
+mt_srand(0);
+echo mt_rand(0, 21474836) . "\n";

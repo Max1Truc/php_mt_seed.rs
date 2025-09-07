@@ -62,7 +62,7 @@ fn lint_arguments(arguments: &Vec<u32>) -> bool {
 }
 
 /// uses the GPU to find the seed given the `arguments` in openwall's php_mt_rand format, and `step` which is between 0 and 256
-fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
+fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     assert!(step < 256);
 
     // We first initialize an wgpu `Instance`, which contains any "global" state wgpu needs.
@@ -293,11 +293,11 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
             "\rERROR: there were many more results than what the GPU could transfer to the CPU,\n\
              please use another tool for now, like https://www.openwall.com/php_mt_seed/"
         );
-        std::process::exit(1);
+        return None;
     }
     let useful_results = &result[subslice_start..subslice_end];
 
-    return Vec::from(useful_results);
+    return Some(Vec::from(useful_results));
 }
 
 fn main() {
@@ -315,13 +315,17 @@ fn main() {
     env_logger::init();
 
     for step in 0..256 {
-        let results = find_mersenne_seed(&arguments, step);
-        for seed in results {
-            println!("\rseed = {:#x} = {} (PHP 7.1.0+)", seed, seed);
-        }
+        match find_mersenne_seed(&arguments, step) {
+            None => std::process::exit(1),
+            Some(results) => {
+                for seed in results {
+                    println!("\rseed = {:#x} = {} (PHP 7.1.0+)", seed, seed);
+                }
 
-        print!("\rprogress: {:03} / 256", step + 1);
-        io::stdout().flush().unwrap();
+                print!("\rprogress: {:03} / 256", step + 1);
+                io::stdout().flush().unwrap();
+            }
+        }
     }
 
     println!("");
@@ -334,16 +338,16 @@ fn test_find_seed_0() {
     normalize_arguments(&mut arguments);
     let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
-    assert_eq!(&result, &[expected_seed]);
+    assert_eq!(result, Some(vec![expected_seed]));
 }
 
 #[test]
 fn test_find_seed_0_short_range() {
-    let mut arguments = vec![9170, 9170, 1000, 10000];
+    let mut arguments = vec![16378811, 16378811, 0, 21474836];
     let expected_seed = 0;
     normalize_arguments(&mut arguments);
     let step = expected_seed % 256;
-    let result = find_mersenne_seed(&arguments, step);
+    let result = find_mersenne_seed(&arguments, step).unwrap();
     assert!(
         result.contains(&expected_seed),
         "expected that the results contain the seed {expected_seed} : {result:?}"
@@ -368,7 +372,7 @@ fn test_find_seed_with_multiple_outputs_default_range() {
     let expected_seed = 4242;
     let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
-    assert_eq!(&result, &[expected_seed]);
+    assert_eq!(result, Some(vec![expected_seed]));
 }
 
 #[test]
@@ -379,5 +383,5 @@ fn test_find_seed_with_multiple_outputs_shorter_ranges() {
     let expected_seed = 424242;
     let step = expected_seed % 256;
     let result = find_mersenne_seed(&arguments, step);
-    assert_eq!(&result, &[expected_seed]);
+    assert_eq!(result, Some(vec![expected_seed]));
 }
