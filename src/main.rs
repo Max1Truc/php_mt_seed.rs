@@ -1,4 +1,4 @@
-use std::{num::NonZeroU64, str::FromStr};
+use std::{io, io::Write, num::NonZeroU64, str::FromStr};
 use wgpu::util::DeviceExt;
 
 fn print_usage() {
@@ -81,7 +81,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
 
     // Print out some basic information about the adapter.
     if step == 0 {
-        println!("Running on Adapter: {:#?}", adapter.get_info());
+        println!("\rRunning on Adapter: {:#?}", adapter.get_info());
     }
 
     // Check to see if the adapter supports compute shaders. While WebGPU guarantees support for
@@ -130,7 +130,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
     });
 
     // Now we create a buffer to store the output data.
-    let max_results = 1_000_000;
+    let max_results = 1_000;
     let output_buffer_size = max_results * std::mem::size_of::<u32>() as u64;
     let output_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -287,13 +287,13 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Vec<u32> {
     // here the length is 2
     // and the actual data is [8, 6]
     let subslice_start = 1;
-    let mut subslice_end = 1 + result[0] as usize;
+    let subslice_end = 1 + result[0] as usize;
     if subslice_end > result.len() {
         eprintln!(
-            "WARNING: there were many more results than the GPU could transfer to the CPU,\n\
+            "\rERROR: there were many more results than what the GPU could transfer to the CPU,\n\
              please use another tool for now, like https://www.openwall.com/php_mt_seed/"
         );
-        subslice_end = result.len()
+        std::process::exit(1);
     }
     let useful_results = &result[subslice_start..subslice_end];
 
@@ -315,12 +315,16 @@ fn main() {
     env_logger::init();
 
     for step in 0..256 {
-        println!("progress: {step} / 256");
         let results = find_mersenne_seed(&arguments, step);
         for seed in results {
-            println!("seed = {:#x} = {} (PHP 7.1.0+)", seed, seed);
+            println!("\rseed = {:#x} = {} (PHP 7.1.0+)", seed, seed);
         }
+
+        print!("\rprogress: {:03} / 256", step + 1);
+        io::stdout().flush().unwrap();
     }
+
+    println!("");
 }
 
 #[test]
