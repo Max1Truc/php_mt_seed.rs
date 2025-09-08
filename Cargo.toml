@@ -1,11 +1,18 @@
 [package]
 name = "php_mt_seed"
+version = "1.0.0"
+authors = ["Max1Truc <max1truc@disroot.org>"]
 edition = "2021"
 rust-version = "1.88"
 publish = false
+license = "MIT/Apache-2.0"
 
 [dependencies]
 bytemuck = "1.22.0"
 env_logger = "0.11"
 pollster = "0.4"
 wgpu = "26.0.0"
+
+[[bin]]
+name = "php_mt_seed_rs"
+path = "src/main.rs"
