@@ -354,7 +354,7 @@ fn test_find_seed_0_short_range() {
     normalize_arguments(&mut arguments);
     let step = expected_seed % 256;
     let prepared = prepare_gpu();
-    let result = execute_with_prepared_gpu(&prepared, &arguments, step);
+    let result = execute_with_prepared_gpu(&prepared, &arguments, step).unwrap();
     assert!(
         result.contains(&expected_seed),
         "expected that the results contain the seed {expected_seed} : {result:?}"
