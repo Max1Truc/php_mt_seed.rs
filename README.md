@@ -3,6 +3,10 @@
 A GPU-accelerated reimplementation of openwall's [php_mt_seed](https://github.com/openwall/php_mt_seed) (PHP 7.1.0+ only).  
 It searches for MT19937 seeds that produce given PHP ```mt_rand()``` outputs using a WebGPU (wgpu) compute shader.
 
+8 times faster than the previous state of the art ! The numbers might vary depending on your configuration, but the ratio should stay more or less the same in most cases.
+
+![graph that compares openwall's php_mt_seed and php_mt_seed_rs, the latter is faster](graph.png)
+
 License: MIT OR Apache-2.0
 
 ## Features
