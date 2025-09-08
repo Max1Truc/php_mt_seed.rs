@@ -1,4 +1,4 @@
-use std::{io, io::Write, num::NonZeroU64, str::FromStr, time::Instant};
+use std::{io, io::Write, num::NonZeroU64, str::FromStr};
 use wgpu::util::DeviceExt;
 
 fn print_usage() {
@@ -70,12 +70,19 @@ fn lint_arguments(arguments: &Vec<u32>) -> bool {
     return true;
 }
 
-/// uses the GPU to find the seed given the `arguments` in openwall's php_mt_rand format, and `step` which is between 0 and 256
-fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
-    assert!(step < 256);
+// A small struct holding the prepared GPU resources to reuse across multiple workloads.
+struct GpuPrepared {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+}
 
-    let now = Instant::now();
-
+/// Prepare the GPU once: instance, adapter, device, queue, shader module, pipeline, bind group layout.
+/// If `print_adapter_info` is true, prints adapter info.
+///
+/// This function is intended to be called once and its result reused across many `execute_with_prepared_gpu` calls.
+fn prepare_gpu() -> GpuPrepared {
     // We first initialize an wgpu `Instance`, which contains any "global" state wgpu needs.
     //
     // This is what loads the vulkan/dx12/metal/opengl libraries.
@@ -91,9 +98,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
             .expect("Failed to create adapter");
 
     // Print out some basic information about the adapter.
-    if step == 0 {
-        println!("\rRunning on Adapter: {:#?}", adapter.get_info());
-    }
+    println!("\rRunning on Adapter: {:#?}", adapter.get_info());
 
     // Check to see if the adapter supports compute shaders. While WebGPU guarantees support for
     // compute shaders, wgpu supports a wider range of devices through the use of "downlevel" devices.
@@ -124,48 +129,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     // If you want to load shaders differently, you can construct the ShaderModuleDescriptor manually.
     let module = device.create_shader_module(wgpu::include_wgsl!("mt19937.wgsl"));
 
-    let prepare_elapsed = now.elapsed();
-    let now = Instant::now();
-
-    let mut input_data = Vec::new();
-    input_data.push(step);
-    input_data.extend_from_slice(arguments);
-
-    // Create a buffer with the data we want to process on the GPU.
-    //
-    // `create_buffer_init` is a utility provided by `wgpu::util::DeviceExt` which simplifies creating
-    // a buffer with some initial data.
-    //
-    // We use the `bytemuck` crate to cast the slice of f32 to a &[u8] to be uploaded to the GPU.
-    let input_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&input_data),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    // Now we create a buffer to store the output data.
-    let max_results = 1_000;
-    let output_buffer_size = max_results * std::mem::size_of::<u32>() as u64;
-    let output_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: output_buffer_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
-    // Finally we create a buffer which can be read by the CPU. This buffer is how we will read
-    // the data. We need to use a separate buffer because we need to have a usage of `MAP_READ`,
-    // and that usage can only be used with `COPY_DST`.
-    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: output_buffer_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    // A bind group layout describes the types of resources that a bind group can contain. Think
-    // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
-    // on the types of resources.
+    // A bind group layout describes the types of resources that a bind group can contain.
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[
@@ -196,25 +160,6 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
         ],
     });
 
-    // The bind group contains the actual resources to bind to the pipeline.
-    //
-    // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
-    // alive until the bind group itself is dropped.
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: input_data_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_data_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
     // The pipeline layout describes the bind groups that a pipeline expects
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -233,30 +178,96 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
         cache: None,
     });
 
+    GpuPrepared {
+        device,
+        queue,
+        pipeline,
+        bind_group_layout,
+    }
+}
+
+/// Execute the workload using an already prepared GPU context.
+///
+/// This function mirrors the original `find_mersenne_seed` implementation but assumes the device,
+/// queue, pipeline, etc. are already available in `prepared`. It returns `Some(Vec<u32>)` on success.
+fn execute_with_prepared_gpu(
+    prepared: &GpuPrepared,
+    arguments: &[u32],
+    step: u32,
+) -> Option<Vec<u32>> {
+    assert!(step < 256);
+
+    let device = &prepared.device;
+    let queue = &prepared.queue;
+    let pipeline = &prepared.pipeline;
+    let bind_group_layout = &prepared.bind_group_layout;
+
+    let mut input_data = Vec::new();
+    input_data.push(step);
+    input_data.extend_from_slice(arguments);
+
+    // Create a buffer with the data we want to process on the GPU.
+    let input_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&input_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    // Now we create a buffer to store the output data.
+    let max_results = 1_000;
+    let output_buffer_size = max_results * std::mem::size_of::<u32>() as u64;
+    let output_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: output_buffer_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    // Finally we create a buffer which can be read by the CPU.
+    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: output_buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    // The bind group contains the actual resources to bind to the pipeline.
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_data_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_data_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
     // The command encoder allows us to record commands that we will later submit to the GPU.
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-    // A compute pass is a single series of compute operations. While we are recording a compute
-    // pass, we cannot record to the encoder.
+    // A compute pass is a single series of compute operations.
     let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: None,
         timestamp_writes: None,
     });
 
-    // Set the pipeline that we want to use
-    compute_pass.set_pipeline(&pipeline);
-    // Set the bind group that we want to use
+    // Set the pipeline and bind group
+    compute_pass.set_pipeline(pipeline);
     compute_pass.set_bind_group(0, &bind_group, &[]);
 
-    // Now we dispatch a series of workgroups. Each workgroup is a 3D grid of individual programs.
+    // Now we dispatch a series of workgroups.
     compute_pass.dispatch_workgroups(65535, 1, 1);
 
-    // Now we drop the compute pass, giving us access to the encoder again.
+    // End compute pass
     drop(compute_pass);
 
-    // We add a copy operation to the encoder. This will copy the data from the output buffer on the
-    // GPU to the download buffer on the CPU.
+    // Copy the GPU output to the CPU-readable buffer.
     encoder.copy_buffer_to_buffer(
         &output_data_buffer,
         0,
@@ -265,45 +276,18 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
         output_data_buffer.size(),
     );
 
-    // We finish the encoder, giving us a fully recorded command buffer.
+    // Finish and submit
     let command_buffer = encoder.finish();
-
-    // At this point nothing has actually been executed on the gpu. We have recorded a series of
-    // commands that we want to execute, but they haven't been sent to the gpu yet.
-    //
-    // Submitting to the queue sends the command buffer to the gpu. The gpu will then execute the
-    // commands in the command buffer in order.
     queue.submit([command_buffer]);
 
-    // We now map the download buffer so we can read it. Mapping tells wgpu that we want to read/write
-    // to the buffer directly by the CPU and it should not permit any more GPU operations on the buffer.
-    //
-    // Mapping requires that the GPU be finished using the buffer before it resolves, so mapping has a callback
-    // to tell you when the mapping is complete.
+    // Map and read the download buffer
     let buffer_slice = download_buffer.slice(..);
-    buffer_slice.map_async(wgpu::MapMode::Read, |_| {
-        // In this case we know exactly when the mapping will be finished,
-        // so we don't need to do anything in the callback.
-    });
-
-    // Wait for the GPU to finish working on the submitted work. This doesn't work on WebGPU, so we would need
-    // to rely on the callback to know when the buffer is mapped.
+    buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::PollType::Wait).unwrap();
-
-    // We can now read the data from the buffer.
     let data = buffer_slice.get_mapped_range();
-    // Convert the data back to a slice of f32.
     let result: &[u32] = bytemuck::cast_slice(&data);
 
-    let execute_elapsed = now.elapsed();
-
-    println!("\rperf prepare {prepare_elapsed:.2?}, exec {execute_elapsed:.2?}");
-
-    // `result` is actually a length + the data + some trailing trash
-    // for example for 2 results we might have:
-    // [2, 8, 6, 4, 1, 0, 0, 0]
-    // here the length is 2
-    // and the actual data is [8, 6]
+    // Extract results (length prefix + data)
     let subslice_start = 1;
     let subslice_end = 1 + result[0] as usize;
     if subslice_end > result.len() {
@@ -315,7 +299,7 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     }
     let useful_results = &result[subslice_start..subslice_end];
 
-    return Some(Vec::from(useful_results));
+    Some(Vec::from(useful_results))
 }
 
 fn main() {
@@ -332,8 +316,11 @@ fn main() {
     // documentation for more information.
     env_logger::init();
 
+    // Prepare GPU once and reuse it for all steps (print adapter info once).
+    let prepared = prepare_gpu();
+
     for step in 0..256 {
-        match find_mersenne_seed(&arguments, step) {
+        match execute_with_prepared_gpu(&prepared, &arguments, step) {
             None => std::process::exit(1),
             Some(results) => {
                 for seed in results {
@@ -355,7 +342,8 @@ fn test_find_seed_0() {
     let expected_seed = 0;
     normalize_arguments(&mut arguments);
     let step = expected_seed % 256;
-    let result = find_mersenne_seed(&arguments, step);
+    let prepared = prepare_gpu();
+    let result = execute_with_prepared_gpu(&prepared, &arguments, step);
     assert_eq!(result, Some(vec![expected_seed]));
 }
 
@@ -365,7 +353,8 @@ fn test_find_seed_0_short_range() {
     let expected_seed = 0;
     normalize_arguments(&mut arguments);
     let step = expected_seed % 256;
-    let result = find_mersenne_seed(&arguments, step).unwrap();
+    let prepared = prepare_gpu();
+    let result = execute_with_prepared_gpu(&prepared, &arguments, step);
     assert!(
         result.contains(&expected_seed),
         "expected that the results contain the seed {expected_seed} : {result:?}"
@@ -389,7 +378,8 @@ fn test_find_seed_with_multiple_outputs_default_range() {
     ];
     let expected_seed = 4242;
     let step = expected_seed % 256;
-    let result = find_mersenne_seed(&arguments, step);
+    let prepared = prepare_gpu();
+    let result = execute_with_prepared_gpu(&prepared, &arguments, step);
     assert_eq!(result, Some(vec![expected_seed]));
 }
 
@@ -400,6 +390,7 @@ fn test_find_seed_with_multiple_outputs_shorter_ranges() {
     ];
     let expected_seed = 424242;
     let step = expected_seed % 256;
-    let result = find_mersenne_seed(&arguments, step);
+    let prepared = prepare_gpu();
+    let result = execute_with_prepared_gpu(&prepared, &arguments, step);
     assert_eq!(result, Some(vec![expected_seed]));
 }
