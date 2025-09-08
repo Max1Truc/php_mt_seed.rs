@@ -1,4 +1,4 @@
-use std::{io, io::Write, num::NonZeroU64, str::FromStr};
+use std::{io, io::Write, num::NonZeroU64, str::FromStr, time::Instant};
 use wgpu::util::DeviceExt;
 
 fn print_usage() {
@@ -74,6 +74,8 @@ fn lint_arguments(arguments: &Vec<u32>) -> bool {
 fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     assert!(step < 256);
 
+    let now = Instant::now();
+
     // We first initialize an wgpu `Instance`, which contains any "global" state wgpu needs.
     //
     // This is what loads the vulkan/dx12/metal/opengl libraries.
@@ -121,6 +123,9 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     // `include_wgsl` is a macro provided by wgpu like `include_str` which constructs a ShaderModuleDescriptor.
     // If you want to load shaders differently, you can construct the ShaderModuleDescriptor manually.
     let module = device.create_shader_module(wgpu::include_wgsl!("mt19937.wgsl"));
+
+    let prepare_elapsed = now.elapsed();
+    let now = Instant::now();
 
     let mut input_data = Vec::new();
     input_data.push(step);
@@ -289,6 +294,10 @@ fn find_mersenne_seed(arguments: &[u32], step: u32) -> Option<Vec<u32>> {
     let data = buffer_slice.get_mapped_range();
     // Convert the data back to a slice of f32.
     let result: &[u32] = bytemuck::cast_slice(&data);
+
+    let execute_elapsed = now.elapsed();
+
+    println!("\rperf prepare {prepare_elapsed:.2?}, exec {execute_elapsed:.2?}");
 
     // `result` is actually a length + the data + some trailing trash
     // for example for 2 results we might have:
