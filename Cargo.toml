@@ -1,12 +1,13 @@
 [package]
 name = "php_mt_seed"
 description = "a GPU-accelerated reimplementation of openwall's php_mt_seed (PHP 7.1.0+ only)"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Max1Truc <max1truc@disroot.org>"]
 edition = "2021"
 rust-version = "1.88"
 publish = true
 license = "MIT/Apache-2.0"
+repository = "https://github.com/Max1Truc/php_mt_seed_rs"
 
 [dependencies]
 bytemuck = "1.22.0"
