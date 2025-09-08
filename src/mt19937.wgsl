@@ -26,11 +26,11 @@ const LOWER_MASK: u32 = 0x7fffffff;
 struct Mersenne {
     idx: u32,
     args_len: u32,
-    state: array<u32, N>,
+    state: array<u32, 20>,
 }
 
 fn init(args_len: u32) -> Mersenne {
-    return Mersenne(0, args_len, array<u32, N>());
+    return Mersenne(0, args_len, array<u32, 20>());
 }
 
 fn reseed(mt: ptr<function, Mersenne>, seed: u32) {
@@ -44,9 +44,10 @@ fn reseed(mt: ptr<function, Mersenne>, seed: u32) {
     for (var i: u32 = args_len + 1; i < M; i++) {
         m = 1812433253 * (m ^ (m >> 30)) + i;
     }
-    (*mt).state[M - 1] = m;
+    (*mt).state[args_len + 1] = m;
     for (var i: u32 = M; i < M + args_len; i++) {
-        (*mt).state[i] = 1812433253 * ((*mt).state[i - 1] ^ ((*mt).state[i - 1] >> 30)) + i;
+        let j = i + args_len + 2 - M;
+        (*mt).state[j] = 1812433253 * ((*mt).state[j - 1] ^ ((*mt).state[j - 1] >> 30)) + i;
     }
 }
 
@@ -60,10 +61,10 @@ fn temper(y: u32) -> u32 {
 }
 
 fn fill_next_state(mt: ptr<function, Mersenne>) {
-    let end = (*mt).args_len;
-    for (var i: u32 = 0; i < end; i++) {
+    let args_len = (*mt).args_len;
+    for (var i: u32 = 0; i < args_len; i++) {
         let x = ((*mt).state[i] & UPPER_MASK) | ((*mt).state[i + 1] & LOWER_MASK);
-        (*mt).state[i] = (*mt).state[i + M] ^ (x >> 1) ^ ((x & 1) * MATRIX_A);
+        (*mt).state[i] = (*mt).state[i + args_len + 2] ^ (x >> 1) ^ ((x & 1) * MATRIX_A);
     }
 
     /*

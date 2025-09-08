@@ -41,6 +41,15 @@ fn lint_arguments(arguments: &Vec<u32>) -> bool {
         return false;
     }
 
+    if arguments.len() / 4 > 8 {
+        eprintln!(
+            "because of some half-baked optimizations, arguments are currently\n\
+             limited to 8 slots (where a slot is one couple of match_min, \n\
+             match_max, range_min, and range_max)"
+        );
+        return false;
+    }
+
     for chunk in arguments.chunks(4) {
         match chunk {
             &[match_min, match_max, range_min, range_max] => {
